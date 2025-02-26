@@ -1,13 +1,17 @@
+
 package crypto
 
 import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha512"  // SHA-512 추가
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"   // 16진수 변환 추가
 	"errors"
 	"fmt"
+	"os"            // 환경 변수 사용을 위해 추가
 	"regexp"
 	"strconv"
 	"strings"
@@ -35,6 +39,7 @@ const (
 
 	Argon2Prefix         = "$argon2"
 	FirebaseScryptPrefix = "$fbscrypt"
+	SHA512Prefix         = "sha512:"  // SHA-512 프리픽스 추가
 	FirebaseScryptKeyLen = 32 // Firebase uses AES-256 which requires 32 byte keys: https://pkg.go.dev/golang.org/x/crypto/scrypt#Key
 )
 
@@ -55,6 +60,8 @@ var (
 
 var ErrArgon2MismatchedHashAndPassword = errors.New("crypto: argon2 hash and password mismatch")
 var ErrScryptMismatchedHashAndPassword = errors.New("crypto: fbscrypt hash and password mismatch")
+
+var ErrSHA512MismatchedHashAndPassword = errors.New("crypto: sha512 hash and password mismatch")
 
 // argon2HashRegexp https://github.com/P-H-C/phc-string-format/blob/master/phc-sf-spec.md#argon2-encoding
 var argon2HashRegexp = regexp.MustCompile("^[$](?P<alg>argon2(d|i|id))[$]v=(?P<v>(16|19))[$]m=(?P<m>[0-9]+),t=(?P<t>[0-9]+),p=(?P<p>[0-9]+)(,keyid=(?P<keyid>[^,$]+))?(,data=(?P<data>[^$]+))?[$](?P<salt>[^$]*)[$](?P<hash>.*)$")
@@ -82,6 +89,37 @@ type FirebaseScryptHashInput struct {
 	salt          []byte
 	rawHash       []byte
 }
+
+// 추가: SHA-512 비교 함수
+func compareHashAndPasswordSHA512(ctx context.Context, hash, password string) error {
+	if !strings.HasPrefix(hash, SHA512Prefix) {
+		return errors.New("crypto: incorrect SHA-512 hash format")
+	}
+
+	attributes := []attribute.KeyValue{
+		attribute.String("alg", "sha512"),
+	}
+
+	var match bool
+	compareHashAndPasswordSubmittedCounter.Add(ctx, 1, metric.WithAttributes(attributes...))
+	defer func() {
+		attributes = append(attributes, attribute.Bool("match", match))
+		compareHashAndPasswordCompletedCounter.Add(ctx, 1, metric.WithAttributes(attributes...))
+	}()
+
+	// 해시 계산
+	hasher := sha512.New()
+	hasher.Write([]byte(password))
+	computedHash := SHA512Prefix + hex.EncodeToString(hasher.Sum(nil))
+	
+	match = subtle.ConstantTimeCompare([]byte(computedHash), []byte(hash)) == 1
+	if !match {
+		return ErrSHA512MismatchedHashAndPassword
+	}
+	
+	return nil
+}
+
 
 // See: https://github.com/firebase/scrypt for implementation
 func ParseFirebaseScryptHash(hash string) (*FirebaseScryptHashInput, error) {
@@ -327,13 +365,16 @@ func firebaseScrypt(password, salt, signerKey, saltSeparator []byte, memCost, ro
 // password, returns nil if equal otherwise an error. Context can be used to
 // cancel the hashing if the algorithm supports it.
 func CompareHashAndPassword(ctx context.Context, hash, password string) error {
-	if strings.HasPrefix(hash, Argon2Prefix) {
+	// SHA-512 프리픽스 확인
+	if strings.HasPrefix(hash, SHA512Prefix) {
+		return compareHashAndPasswordSHA512(ctx, hash, password)
+	} else if strings.HasPrefix(hash, Argon2Prefix) {
 		return compareHashAndPasswordArgon2(ctx, hash, password)
 	} else if strings.HasPrefix(hash, FirebaseScryptPrefix) {
 		return compareHashAndPasswordFirebaseScrypt(ctx, hash, password)
 	}
 
-	// assume bcrypt
+	// 기존 bcrypt 코드 유지
 	hashCost, err := bcrypt.Cost([]byte(hash))
 	if err != nil {
 		return err
@@ -362,6 +403,12 @@ func CompareHashAndPassword(ctx context.Context, hash, password string) error {
 // password, using PasswordHashCost. Context can be used to cancel the hashing
 // if the algorithm supports it.
 func GenerateFromPassword(ctx context.Context, password string) (string, error) {
+	// 환경 변수를 통해 SHA-512 사용 여부 확인
+	if os.Getenv("AUTH_PASSWORD_HASH_ALGORITHM") == "sha512" {
+		return GenerateFromPasswordSHA512(password)
+	}
+
+	// 기존 bcrypt 코드
 	hashCost := bcrypt.DefaultCost
 
 	switch PasswordHashCost {
@@ -380,6 +427,12 @@ func GenerateFromPassword(ctx context.Context, password string) (string, error) 
 	hash := must(bcrypt.GenerateFromPassword([]byte(password), hashCost))
 
 	return string(hash), nil
+}
+
+func GenerateFromPasswordSHA512(password string) (string, error) {
+	hasher := sha512.New()
+	hasher.Write([]byte(password))
+	return SHA512Prefix + hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func GeneratePassword(requiredChars []string, length int) string {

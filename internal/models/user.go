@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"crypto/sha256"
+	
 	"database/sql"
 	"encoding/base64"
 	"fmt"
@@ -74,13 +75,10 @@ type User struct {
 }
 
 func NewUserWithPasswordHash(phone, email, passwordHash, aud string, userData map[string]interface{}) (*User, error) {
-	// SHA-512 해시 검증 추가
+	// SHA-512 해시 검증 수정
 	if strings.HasPrefix(passwordHash, "sha512:") {
-			// SHA-512 해시 기본 형식 검증
-			parts := strings.Split(passwordHash, "$")
-			if len(parts) != 4 {
-					return nil, errors.New("invalid SHA-512 hash format")
-			}
+			// SHA-512 해시는 단순히 프리픽스 확인만 함 (형식: sha512:{hex})
+			// 추가 검증 필요 없음
 	} else if strings.HasPrefix(passwordHash, crypto.Argon2Prefix) {
 			_, err := crypto.ParseArgon2Hash(passwordHash)
 			if err != nil {
