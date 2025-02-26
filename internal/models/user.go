@@ -74,31 +74,39 @@ type User struct {
 }
 
 func NewUserWithPasswordHash(phone, email, passwordHash, aud string, userData map[string]interface{}) (*User, error) {
-	if strings.HasPrefix(passwordHash, crypto.Argon2Prefix) {
-		_, err := crypto.ParseArgon2Hash(passwordHash)
-		if err != nil {
-			return nil, err
-		}
+	// SHA-512 해시 검증 추가
+	if strings.HasPrefix(passwordHash, "sha512:") {
+			// SHA-512 해시 기본 형식 검증
+			parts := strings.Split(passwordHash, "$")
+			if len(parts) != 4 {
+					return nil, errors.New("invalid SHA-512 hash format")
+			}
+	} else if strings.HasPrefix(passwordHash, crypto.Argon2Prefix) {
+			_, err := crypto.ParseArgon2Hash(passwordHash)
+			if err != nil {
+					return nil, err
+			}
 	} else if strings.HasPrefix(passwordHash, crypto.FirebaseScryptPrefix) {
-		_, err := crypto.ParseFirebaseScryptHash(passwordHash)
-		if err != nil {
-			return nil, err
-		}
+			_, err := crypto.ParseFirebaseScryptHash(passwordHash)
+			if err != nil {
+					return nil, err
+			}
 	} else {
-		// verify that the hash is a bcrypt hash
-		_, err := bcrypt.Cost([]byte(passwordHash))
-		if err != nil {
-			return nil, err
-		}
+			// bcrypt 해시 검증
+			_, err := bcrypt.Cost([]byte(passwordHash))
+			if err != nil {
+					return nil, err
+			}
 	}
+
 	id := uuid.Must(uuid.NewV4())
 	user := &User{
-		ID:                id,
-		Aud:               aud,
-		Email:             storage.NullString(strings.ToLower(email)),
-		Phone:             storage.NullString(phone),
-		UserMetaData:      userData,
-		EncryptedPassword: &passwordHash,
+			ID:                id,
+			Aud:               aud,
+			Email:             storage.NullString(strings.ToLower(email)),
+			Phone:             storage.NullString(phone),
+			UserMetaData:      userData,
+			EncryptedPassword: &passwordHash,
 	}
 	return user, nil
 }
@@ -385,41 +393,42 @@ func (u *User) UpdatePassword(tx *storage.Connection, sessionID *uuid.UUID) erro
 // Authenticate a user from a password
 func (u *User) Authenticate(ctx context.Context, tx *storage.Connection, password string, decryptionKeys map[string]string, encrypt bool, encryptionKeyID string) (bool, bool, error) {
 	if u.EncryptedPassword == nil {
-		return false, false, nil
+			return false, false, nil
 	}
 
 	hash := *u.EncryptedPassword
 
 	if hash == "" {
-		return false, false, nil
+			return false, false, nil
 	}
 
 	es := crypto.ParseEncryptedString(hash)
 	if es != nil {
-		h, err := es.Decrypt(u.ID.String(), decryptionKeys)
-		if err != nil {
-			return false, false, err
-		}
+			h, err := es.Decrypt(u.ID.String(), decryptionKeys)
+			if err != nil {
+					return false, false, err
+			}
 
-		hash = string(h)
+			hash = string(h)
 	}
 
 	compareErr := crypto.CompareHashAndPassword(ctx, hash, password)
 
-	if !strings.HasPrefix(hash, crypto.Argon2Prefix) && !strings.HasPrefix(hash, crypto.FirebaseScryptPrefix) {
-		// check if cost exceeds default cost or is too low
-		cost, err := bcrypt.Cost([]byte(hash))
-		if err != nil {
-			return compareErr == nil, false, err
-		}
-
-		if cost > bcrypt.DefaultCost || cost == bcrypt.MinCost {
-			// don't bother with encrypting the password in Authenticate
-			// since it's handled separately
-			if err := u.SetPassword(ctx, password, false, "", ""); err != nil {
-				return compareErr == nil, false, err
+	// SHA-512, Argon2, Firebase Scrypt 확인 로직 유지
+	if !strings.HasPrefix(hash, "sha512:") && 
+		 !strings.HasPrefix(hash, crypto.Argon2Prefix) && 
+		 !strings.HasPrefix(hash, crypto.FirebaseScryptPrefix) {
+			// bcrypt 해시 비용 확인
+			cost, err := bcrypt.Cost([]byte(hash))
+			if err != nil {
+					return compareErr == nil, false, err
 			}
-		}
+
+			if cost > bcrypt.DefaultCost || cost == bcrypt.MinCost {
+					if err := u.SetPassword(ctx, password, false, "", ""); err != nil {
+							return compareErr == nil, false, err
+					}
+			}
 	}
 
 	return compareErr == nil, encrypt && (es == nil || es.ShouldReEncrypt(encryptionKeyID)), nil
