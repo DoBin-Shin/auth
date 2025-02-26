@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"math/big"
 	"strconv"
 	"strings"
@@ -155,4 +154,9 @@ func GenerateTokenHash(emailOrPhone, otp string) string {
 	hasher := sha512.New()
 	hasher.Write([]byte(emailOrPhone + otp))
 	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func secureRandomInt(max int) int { 
+	randomInt, _ := rand.Int(rand.Reader, big.NewInt(int64(max))) 
+	return int(randomInt.Int64()) 
 }
